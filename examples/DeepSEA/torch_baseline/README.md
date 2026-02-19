@@ -6,19 +6,48 @@ Minimal runnable baseline aligned to AMBER DeepSEA task:
 - loss: BCEWithLogitsLoss
 - metric: macro AUROC across valid labels
 
+## Selectable models via `--model-id`
+- `local_transformer`: local `nn.TransformerEncoder` baseline
+- `dnabert2`: HuggingFace DNABERT-2 backbone + classification head
+- `nucleotide_transformer`: HuggingFace Nucleotide Transformer backbone + classification head
+
+> For `dnabert2` and `nucleotide_transformer`, install:
+```bash
+pip install transformers
+```
+
 ## Files
-- `dataset.py`: `.mat` loader + `DeepSEADataset`
-- `model_transformer.py`: `DeepSEATransformer`
+- `dataset.py`: `.mat` loader + `DeepSEADataset` + one-hot→DNA sequence converter
+- `model_transformer.py`: model factory (`build_model`) and model definitions
 - `train.py`: training entry
 - `eval.py`: checkpoint evaluation entry
 
-## Train
+## Train (local Transformer)
 ```bash
 python examples/DeepSEA/torch_baseline/train.py \
   --train-mat /path/to/train.mat \
   --valid-mat /path/to/valid.mat \
+  --model-id local_transformer \
   --outdir ./outputs/torch_transformer \
   --epochs 5 --batch-size 64
+```
+
+## Train (DNABERT-2)
+```bash
+python examples/DeepSEA/torch_baseline/train.py \
+  --train-mat /path/to/train.mat \
+  --valid-mat /path/to/valid.mat \
+  --model-id dnabert2 \
+  --outdir ./outputs/dnabert2
+```
+
+## Train (Nucleotide Transformer)
+```bash
+python examples/DeepSEA/torch_baseline/train.py \
+  --train-mat /path/to/train.mat \
+  --valid-mat /path/to/valid.mat \
+  --model-id nucleotide_transformer \
+  --outdir ./outputs/nucleotide_transformer
 ```
 
 ## Evaluate
@@ -26,5 +55,6 @@ python examples/DeepSEA/torch_baseline/train.py \
 python examples/DeepSEA/torch_baseline/eval.py \
   --train-mat /path/to/train.mat \
   --valid-mat /path/to/valid.mat \
-  --ckpt ./outputs/torch_transformer/best_model.pt
+  --model-id dnabert2 \
+  --ckpt ./outputs/dnabert2/best_model.pt
 ```

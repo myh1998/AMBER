@@ -12,6 +12,9 @@ import torch
 from torch.utils.data import Dataset
 
 
+DNA_VOCAB = np.array(["A", "C", "G", "T"])
+
+
 class DeepSEADataset(Dataset):
     """PyTorch dataset for DeepSEA matrices.
 
@@ -94,3 +97,11 @@ def load_deepsea_train_valid(train_mat: str, valid_mat: str):
     )
 
     return DeepSEADataset(x_train, y_train), DeepSEADataset(x_valid, y_valid)
+
+
+def one_hot_to_dna_batch(x: torch.Tensor) -> list:
+    """Convert one-hot DNA tensor [B, L, 4] to list[str] sequences."""
+    if x.ndim != 3 or x.shape[-1] != 4:
+        raise ValueError(f"Expected [B, L, 4], got shape={tuple(x.shape)}")
+    idx = x.argmax(dim=-1).cpu().numpy()
+    return ["".join(DNA_VOCAB[row]) for row in idx]

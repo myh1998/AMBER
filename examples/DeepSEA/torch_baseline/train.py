@@ -1,4 +1,4 @@
-"""Train script for Transformer baseline on DeepSEA task."""
+"""Train script for selectable Transformer-like baselines on DeepSEA task."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from torch import nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
-from dataset import load_deepsea_train_valid
-from model_transformer import DeepSEATransformer
+from dataset import load_deepsea_train_valid, one_hot_to_dna_batch
+from model_transformer import build_model, tokenize_dna_sequences
 
 
 def mean_auc(y_true: np.ndarray, y_prob: np.ndarray) -> float:
@@ -27,20 +27,36 @@ def mean_auc(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     return float(np.mean(aucs)) if aucs else float("nan")
 
 
+def infer_hf_model_name(model_id: str, hf_model_name: str | None) -> str:
+    if hf_model_name:
+        return hf_model_name
+    if model_id == "dnabert2":
+        return "zhihan1996/DNABERT-2-117M"
+    if model_id == "nucleotide_transformer":
+        return "InstaDeepAI/nucleotide-transformer-v2-100m-multi-species"
+    raise ValueError(f"No default hf model for model_id={model_id}")
+
+
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, model_id: str, tokenizer=None, max_length: int = 1024):
     model.eval()
     logits_all, y_all = [], []
     loss_fn = nn.BCEWithLogitsLoss()
     losses = []
     for x, y in loader:
-        x = x.to(device)
         y = y.to(device)
-        logits = model(x)
+        if model_id == "local_transformer":
+            x = x.to(device)
+            logits = model(x)
+        else:
+            seqs = one_hot_to_dna_batch(x)
+            tok = tokenize_dna_sequences(seqs, tokenizer=tokenizer, max_length=max_length, device=device)
+            logits = model(tok["input_ids"], tok["attention_mask"])
         loss = loss_fn(logits, y)
         losses.append(loss.item())
         logits_all.append(torch.sigmoid(logits).cpu().numpy())
         y_all.append(y.cpu().numpy())
+
     y_prob = np.concatenate(logits_all, axis=0)
     y_true = np.concatenate(y_all, axis=0)
     return {
@@ -54,10 +70,17 @@ def main():
     parser.add_argument("--train-mat", required=True)
     parser.add_argument("--valid-mat", required=True)
     parser.add_argument("--outdir", default="./outputs/torch_transformer")
+    parser.add_argument(
+        "--model-id",
+        default="local_transformer",
+        choices=["local_transformer", "dnabert2", "nucleotide_transformer"],
+    )
+    parser.add_argument("--hf-model-name", default=None, help="Optional override for HF model repo id")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--max-length", type=int, default=1024)
     parser.add_argument("--d-model", type=int, default=128)
     parser.add_argument("--nhead", type=int, default=8)
     parser.add_argument("--num-layers", type=int, default=4)
@@ -87,13 +110,35 @@ def main():
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DeepSEATransformer(
-        seq_len=train_ds.x.shape[1],
-        in_channels=train_ds.x.shape[2],
+
+    model_kwargs = {}
+    tokenizer = None
+    if args.model_id == "local_transformer":
+        model_kwargs.update(
+            {
+                "seq_len": train_ds.x.shape[1],
+                "in_channels": train_ds.x.shape[2],
+                "d_model": args.d_model,
+                "nhead": args.nhead,
+                "num_layers": args.num_layers,
+            }
+        )
+    else:
+        hf_model_name = infer_hf_model_name(args.model_id, args.hf_model_name)
+        model_kwargs["hf_model_name"] = hf_model_name
+        try:
+            from transformers import AutoTokenizer
+        except ImportError as e:
+            raise ImportError(
+                "transformers is required for model_id=dnabert2/nucleotide_transformer. "
+                "Install with: pip install transformers"
+            ) from e
+        tokenizer = AutoTokenizer.from_pretrained(hf_model_name, trust_remote_code=True)
+
+    model = build_model(
+        model_id=args.model_id,
         num_labels=train_ds.y.shape[1],
-        d_model=args.d_model,
-        nhead=args.nhead,
-        num_layers=args.num_layers,
+        **model_kwargs,
     ).to(device)
 
     optimizer = AdamW(model.parameters(), lr=args.lr)
@@ -106,19 +151,34 @@ def main():
         model.train()
         losses = []
         for x, y in train_loader:
-            x = x.to(device)
             y = y.to(device)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(x)
+
+            if args.model_id == "local_transformer":
+                x = x.to(device)
+                logits = model(x)
+            else:
+                seqs = one_hot_to_dna_batch(x)
+                tok = tokenize_dna_sequences(seqs, tokenizer=tokenizer, max_length=args.max_length, device=device)
+                logits = model(tok["input_ids"], tok["attention_mask"])
+
             loss = loss_fn(logits, y)
             loss.backward()
             optimizer.step()
             losses.append(loss.item())
 
         train_loss = float(np.mean(losses))
-        val_metrics = evaluate(model, valid_loader, device)
+        val_metrics = evaluate(
+            model,
+            valid_loader,
+            device,
+            model_id=args.model_id,
+            tokenizer=tokenizer,
+            max_length=args.max_length,
+        )
         row = {
             "epoch": epoch,
+            "model_id": args.model_id,
             "train_loss": train_loss,
             "val_loss": val_metrics["loss"],
             "val_auc_macro": val_metrics["auc_macro"],
