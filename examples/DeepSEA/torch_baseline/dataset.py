@@ -73,11 +73,33 @@ def _pick_xy(data: dict, x_candidates, y_candidates) -> Tuple[np.ndarray, np.nda
     x = data[x_key]
     y = data[y_key]
 
-    # H5 files may store transposed dimensions
-    if x.shape[0] == 4 and x.ndim == 3:
-        x = np.transpose(x, (2, 1, 0))
+    # Normalize y to [N, 919] first.
     if y.ndim == 2 and y.shape[0] == 919 and y.shape[1] != 919:
         y = y.T
+
+    # Normalize x to [N, 1000, 4].
+    # Common DeepSEA layouts include:
+    # - [N, 1000, 4]
+    # - [N, 4, 1000]
+    # - [1000, 4, N]
+    # - [4, 1000, N]
+    if x.ndim != 3:
+        raise ValueError(f"Expected x to be 3D before normalization, got shape={x.shape}")
+
+    # If sample dimension is at the end (e.g. [1000, 4, N] or [4, 1000, N]).
+    if x.shape[-1] == y.shape[0]:
+        if x.shape[0] == 1000 and x.shape[1] == 4:
+            x = np.transpose(x, (2, 0, 1))
+        elif x.shape[0] == 4 and x.shape[1] == 1000:
+            x = np.transpose(x, (2, 1, 0))
+        else:
+            # generic: move sample axis to front and keep the other two in order
+            x = np.transpose(x, (2, 0, 1))
+
+    # If sample dimension is already first but channel/length are swapped.
+    if x.shape[0] == y.shape[0] and x.shape[1] == 4 and x.shape[2] == 1000:
+        x = np.transpose(x, (0, 2, 1))
+
     return x, y
 
 

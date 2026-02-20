@@ -58,3 +58,8 @@ python examples/DeepSEA/torch_baseline/eval.py \
   --model-id dnabert2 \
   --ckpt ./outputs/dnabert2/best_model.pt
 ```
+
+## Runtime debugging tips on cluster
+- `train.py` and `eval.py` now print timestamped step logs from the main process.
+- Default `--num-workers` is set to `0` to avoid silent worker-process failures in some schedulers.
+- If stable, you can increase `--num-workers` later.

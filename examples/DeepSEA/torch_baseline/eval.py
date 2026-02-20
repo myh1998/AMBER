@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
+import traceback
 
 import numpy as np
 import torch
@@ -12,6 +14,10 @@ from torch.utils.data import DataLoader
 
 from dataset import load_deepsea_train_valid, one_hot_to_dna_batch
 from model_transformer import build_model, tokenize_dna_sequences
+
+
+def log_step(msg: str) -> None:
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 
 def mean_auc(y_true: np.ndarray, y_prob: np.ndarray) -> float:
@@ -35,6 +41,7 @@ def infer_hf_model_name(model_id: str, hf_model_name: str | None) -> str:
 
 
 def main():
+    total_start = time.perf_counter()
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-mat", required=True)
     parser.add_argument("--valid-mat", required=True)
@@ -46,11 +53,26 @@ def main():
     )
     parser.add_argument("--hf-model-name", default=None)
     parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--max-length", type=int, default=1024)
     args = parser.parse_args()
+    log_step("eval.py started")
+    log_step(f"args={vars(args)}")
 
-    train_ds, valid_ds = load_deepsea_train_valid(args.train_mat, args.valid_mat)
+    log_step("loading datasets from MAT files")
+    io_start = time.perf_counter()
+    try:
+        train_ds, valid_ds = load_deepsea_train_valid(args.train_mat, args.valid_mat)
+    except Exception:
+        log_step("ERROR while loading datasets")
+        traceback.print_exc()
+        raise
+    log_step(
+        "dataset loaded: "
+        f"train_x={tuple(train_ds.x.shape)} train_y={tuple(train_ds.y.shape)} "
+        f"valid_x={tuple(valid_ds.x.shape)} valid_y={tuple(valid_ds.y.shape)} "
+        f"(elapsed={time.perf_counter()-io_start:.2f}s)"
+    )
     valid_loader = DataLoader(
         valid_ds,
         batch_size=args.batch_size,
@@ -60,6 +82,7 @@ def main():
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log_step(f"device={device}")
 
     model_kwargs = {}
     tokenizer = None
@@ -87,6 +110,7 @@ def main():
         num_labels=train_ds.y.shape[1],
         **model_kwargs,
     ).to(device)
+    log_step("loading checkpoint")
     model.load_state_dict(torch.load(args.ckpt, map_location=device))
     model.eval()
 
@@ -108,6 +132,7 @@ def main():
     metrics = {"model_id": args.model_id, "valid_auc_macro": mean_auc(y_true, y_prob)}
     print(metrics)
     print(json.dumps(metrics, indent=2))
+    log_step(f"evaluation completed in {time.perf_counter()-total_start:.2f}s")
 
 
 if __name__ == "__main__":
